@@ -240,7 +240,7 @@ async function extractServerTime(page) {
 
     try {
         console.log('第一步：打开目标网页...');
-        await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto('https://g4f.gg/dsxfjras', { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForSelector('text=/\\d{2}:\\d{2}:\\d{2}/', { timeout: 15000 }).catch(() => {});
         await page.waitForTimeout(2000);
 
