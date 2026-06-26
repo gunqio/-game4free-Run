@@ -1,0 +1,14 @@
+{
+  "name": "server-renew",
+  "version": "1.0.0",
+  "description": "Auto renew gaming4free server timer",
+  "main": "renew.js",
+  "scripts": {
+    "start": "node renew.js"
+  },
+  "dependencies": {
+    "playwright": "^1.44.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
