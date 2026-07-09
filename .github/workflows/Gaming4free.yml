@@ -1,7 +1,7 @@
 name: Gaming4free Auto Renew
 
 on:
-  workflow_dispatch:          # 手动触发
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -58,9 +58,9 @@ jobs:
       run: |
         xvfb-run -a python gaming4free.py
 
-    # ==================== 清理所有工作流的旧运行记录 ====================
+    # ==================== 清理所有工作流的旧运行记录（改进版） ====================
     - name: Cleanup all workflow runs (keep latest 3 per workflow)
-      if: always()               # 无论续期成功与否都执行清理
+      if: always()
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
@@ -69,44 +69,31 @@ jobs:
 
         echo "📋 开始清理所有工作流的运行记录，每个工作流保留最近 $KEEP 条。"
 
-        # 获取所有工作流（名称和 ID）
-        workflows=$(gh workflow list --all --json name,id --jq '.[] | "\(.name)|\(.id)"')
+        # 获取所有运行记录（包含工作流名称和 ID），最多 500 条
+        runs_json=$(gh run list --limit 500 --json databaseId,workflowName)
 
-        echo "$workflows" | while IFS='|' read -r wf_name wf_id; do
-          if [ -z "$wf_name" ]; then
+        # 按工作流名称分组，对每个组保留前 KEEP 个，其余放入删除列表
+        echo "$runs_json" | jq -c --argjson keep "$KEEP" '
+          group_by(.workflowName) | .[] | {
+            workflow: .[0].workflowName,
+            to_delete: .[$keep:] | map(.databaseId)
+          }
+        ' | while read -r obj; do
+          wf_name=$(echo "$obj" | jq -r '.workflow')
+          to_delete=$(echo "$obj" | jq -r '.to_delete[]')
+          if [ -z "$to_delete" ]; then
+            echo "✅ 工作流 '$wf_name' 无需清理。"
             continue
           fi
-
-          echo ""
-          echo "▶️ 正在处理工作流: $wf_name (ID: $wf_id)"
-
-          # 获取该工作流的所有运行 ID（按时间倒序）
-          run_ids=$(gh run list --workflow "$wf_name" --limit 100 --json databaseId --jq '.[].databaseId')
-
-          ids_array=($run_ids)
-          total=${#ids_array[@]}
-
-          if [ $total -le $KEEP ]; then
-            echo "   ✅ 运行记录数量 ($total) 不超过 $KEEP，跳过。"
-            continue
-          fi
-
-          # 需要删除的 ID 列表（从第 KEEP+1 个开始）
-          to_delete=("${ids_array[@]:$KEEP}")
-
-          echo "   📦 共有 $total 条记录，将删除 ${#to_delete[@]} 条旧记录。"
-
-          for run_id in "${to_delete[@]}"; do
-            # 跳过当前正在运行的记录（防止误删）
+          echo "▶️ 工作流: $wf_name，将删除以下旧记录："
+          for run_id in $to_delete; do
             if [ "$run_id" == "$CURRENT_RUN_ID" ]; then
-              echo "   ⏭️ 跳过当前运行 ID: $run_id（属于当前工作流）"
+              echo "   ⏭️ 跳过当前运行 ID: $run_id"
               continue
             fi
             echo "   🗑️ 删除运行 ID: $run_id"
             gh run delete $run_id
-            echo "   ✅ 删除成功"
           done
         done
 
-        echo ""
-        echo "✅ 所有工作流清理完成！"
+        echo "✅ 清理完成！"
