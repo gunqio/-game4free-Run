@@ -1,11 +1,11 @@
 name: Gaming4free Auto Renew
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:          # 手动触发
 
 permissions:
   contents: write
-  actions: write          # 👈 新增：删除运行记录必须的权限
+  actions: write              # 允许删除运行记录
 
 jobs:
   run_renewal:
@@ -40,7 +40,6 @@ jobs:
         sleep 5
         curl -il -x socks5://127.0.0.1:1080 https://api.ipify.org
 
-    # ----- 从私库拉取脚本（带认证） -----
     - name: Pull script from private repository
       env:
         REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
@@ -59,53 +58,55 @@ jobs:
       run: |
         xvfb-run -a python gaming4free.py
 
-    # ============ 新增：清理旧运行记录（保留最近 3 条） ============
-    - name: Cleanup old workflow runs (keep latest 3)
-      if: always()          # 无论前面的步骤成功与否都执行清理
+    # ==================== 清理所有工作流的旧运行记录 ====================
+    - name: Cleanup all workflow runs (keep latest 3 per workflow)
+      if: always()               # 无论续期成功与否都执行清理
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        REPO="${{ github.repository }}"
-        WORKFLOW_ID="${{ github.workflow }}"
         KEEP=3
         CURRENT_RUN_ID="${{ github.run_id }}"
 
-        # 获取该工作流的所有运行 ID（按创建时间倒序）
-        run_ids=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          "https://api.github.com/repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?per_page=100" | \
-          jq -r '.workflow_runs[].id')
+        echo "📋 开始清理所有工作流的运行记录，每个工作流保留最近 $KEEP 条。"
 
-        # 转换为数组
-        ids_array=($run_ids)
-        total=${#ids_array[@]}
+        # 获取所有工作流（名称和 ID）
+        workflows=$(gh workflow list --all --json name,id --jq '.[] | "\(.name)|\(.id)"')
 
-        echo "📋 工作流 '$WORKFLOW_ID' 共有 $total 条运行记录，将保留最近 $KEEP 条（包括当前运行）。"
-
-        if [ $total -le $KEEP ]; then
-          echo "✅ 记录数不超过 $KEEP，无需清理。"
-          exit 0
-        fi
-
-        # 需要删除的 ID 列表（从第 KEEP+1 个到最后一个）
-        to_delete=("${ids_array[@]:$KEEP}")
-
-        echo "🗑️ 将删除 ${#to_delete[@]} 条旧记录（跳过当前运行 ID: $CURRENT_RUN_ID）。"
-
-        for run_id in "${to_delete[@]}"; do
-          # 跳过当前正在运行的记录（防止误删）
-          if [ "$run_id" == "$CURRENT_RUN_ID" ]; then
-            echo "⏭️ 跳过当前运行 ID: $run_id"
+        echo "$workflows" | while IFS='|' read -r wf_name wf_id; do
+          if [ -z "$wf_name" ]; then
             continue
           fi
-          echo "   🗑️ 删除运行 ID: $run_id"
-          response=$(curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/$REPO/actions/runs/$run_id" -w "%{http_code}")
-          if [ "$response" -eq 204 ]; then
-            echo "   ✅ 删除成功"
-          else
-            echo "   ⚠️ 删除失败，HTTP 状态码: $response"
+
+          echo ""
+          echo "▶️ 正在处理工作流: $wf_name (ID: $wf_id)"
+
+          # 获取该工作流的所有运行 ID（按时间倒序）
+          run_ids=$(gh run list --workflow "$wf_name" --limit 100 --json databaseId --jq '.[].databaseId')
+
+          ids_array=($run_ids)
+          total=${#ids_array[@]}
+
+          if [ $total -le $KEEP ]; then
+            echo "   ✅ 运行记录数量 ($total) 不超过 $KEEP，跳过。"
+            continue
           fi
-          sleep 0.5   # 避免 API 速率限制
+
+          # 需要删除的 ID 列表（从第 KEEP+1 个开始）
+          to_delete=("${ids_array[@]:$KEEP}")
+
+          echo "   📦 共有 $total 条记录，将删除 ${#to_delete[@]} 条旧记录。"
+
+          for run_id in "${to_delete[@]}"; do
+            # 跳过当前正在运行的记录（防止误删）
+            if [ "$run_id" == "$CURRENT_RUN_ID" ]; then
+              echo "   ⏭️ 跳过当前运行 ID: $run_id（属于当前工作流）"
+              continue
+            fi
+            echo "   🗑️ 删除运行 ID: $run_id"
+            gh run delete $run_id
+            echo "   ✅ 删除成功"
+          done
         done
 
-        echo "✅ 清理完成！"
+        echo ""
+        echo "✅ 所有工作流清理完成！"
