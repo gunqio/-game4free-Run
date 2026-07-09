@@ -1,0 +1,51 @@
+name: Gaming4free Auto Renew
+
+on:
+  workflow_dispatch:
+
+# ⚠️ 必须添加权限配置，允许 Action 修改仓库文件
+permissions:
+  contents: write
+
+jobs:
+  run_renewal:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install seleniumbase requests
+        
+    - name: Setup Chrome
+      run: |
+        seleniumbase install chromedriver
+
+    - name: Setup Proxy Tunnel (Gost)
+      env:
+        PROXY_URL: ${{ secrets.PROXY }} 
+      run: |
+        wget -q https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
+        gunzip gost-linux-amd64-2.11.5.gz
+        chmod +x gost-linux-amd64-2.11.5
+        nohup ./gost-linux-amd64-2.11.5 -L :1080 -F "${PROXY_URL}" > gost.log 2>&1 &
+        sleep 5
+        curl -il -x socks5://127.0.0.1:1080 https://api.ipify.org
+
+    - name: Run Script
+      env:
+        PROXY: socks5://127.0.0.1:1080
+        TG_TOKEN: ${{ secrets.TG_TOKEN }}      # 映射 Secret
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}  # 映射 Secret
+        SERVERS: ${{ secrets.SERVERS }}  # 映射 Secret
+      run: |
+        # 使用 xvfb 运行以支持强力过人机验证模式
+        xvfb-run -a python gaming4free.py
