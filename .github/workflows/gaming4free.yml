@@ -5,7 +5,7 @@ on:
 
 permissions:
   contents: write
-  actions: write              # 允许删除运行记录
+  actions: write
 
 jobs:
   run_renewal:
@@ -29,24 +29,109 @@ jobs:
       run: |
         seleniumbase install chromedriver
 
-    - name: Setup Proxy Tunnel (Gost)
+    - name: Setup Proxy (sing-box)
       env:
         PROXY_URL: ${{ secrets.PROXY }}
       run: |
-        wget -q https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
-        gunzip gost-linux-amd64-2.11.5.gz
-        chmod +x gost-linux-amd64-2.11.5
-        nohup ./gost-linux-amd64-2.11.5 -L :1080 -F "${PROXY_URL}" > gost.log 2>&1 &
+        wget -q https://github.com/SagerNet/sing-box/releases/download/v1.8.6/sing-box-1.8.6-linux-amd64.tar.gz
+        tar -xzf sing-box-1.8.6-linux-amd64.tar.gz
+        sudo mv sing-box-1.8.6-linux-amd64/sing-box /usr/local/bin/
+        chmod +x /usr/local/bin/sing-box
+
+        cat > /tmp/gen_config.py <<'EOF'
+import os, json, sys
+from urllib.parse import urlparse, parse_qs
+
+proxy_url = os.environ.get('PROXY_URL', '')
+if not proxy_url:
+    print('PROXY_URL not set', file=sys.stderr)
+    sys.exit(1)
+
+parsed = urlparse(proxy_url)
+protocol = parsed.scheme
+host = parsed.hostname
+port = parsed.port or 443
+uuid = parsed.username
+if not uuid:
+    print('Missing UUID in PROXY_URL', file=sys.stderr)
+    sys.exit(1)
+
+query = parse_qs(parsed.query)
+security = query.get('security', [''])[0]
+sni = query.get('sni', [''])[0] or host
+fp = query.get('fp', ['chrome'])[0]
+flow = query.get('flow', [''])[0]
+transport_type = query.get('type', [''])[0]
+ws_host = query.get('host', [''])[0]
+ws_path = query.get('path', [''])[0]
+
+outbound = {
+    "type": protocol,
+    "tag": "proxy",
+    "server": host,
+    "server_port": port,
+    "uuid": uuid,
+    "security": security if security else "none",
+    "cipher": "auto",
+    "tls": {
+        "enabled": bool(security),
+        "server_name": sni,
+        "insecure": False,
+        "utls": {
+            "enabled": True,
+            "fingerprint": fp
+        }
+    }
+}
+if protocol == 'vless' and flow:
+    outbound['flow'] = flow
+
+if transport_type == 'ws':
+    outbound['transport'] = {
+        "type": "ws",
+        "path": ws_path or "/",
+        "headers": {
+            "Host": ws_host or host
+        }
+    }
+
+config = {
+    "log": {"level": "error"},
+    "inbounds": [
+        {
+            "type": "socks",
+            "tag": "socks-in",
+            "listen": "127.0.0.1",
+            "listen_port": 1080
+        }
+    ],
+    "outbounds": [outbound],
+    "route": {
+        "rules": [
+            {
+                "outbound": "proxy",
+                "network": ["tcp", "udp"]
+            }
+        ],
+        "final": "proxy"
+    }
+}
+with open('/tmp/config.json', 'w') as f:
+    json.dump(config, f, indent=2)
+EOF
+
+        python3 /tmp/gen_config.py
+        nohup sing-box run -c /tmp/config.json > sing-box.log 2>&1 &
         sleep 5
-        curl -il -x socks5://127.0.0.1:1080 https://api.ipify.org
+        curl -x socks5://127.0.0.1:1080 https://api.ipify.org -s -o /dev/null -w "出口IP: %{remote_ip}\n" || echo "代理测试失败"
 
     - name: Pull script from private repository
       env:
         REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
       run: |
         wget -q --header="Authorization: token ${REPO_TOKEN}" \
-             https://raw.githubusercontent.com/gunqio/zhiyong/main/gaming4free.py \
-             -O gaming4free.py
+          https://raw.githubusercontent.com/gunqio/zhiyong/main/gaming4free.py \
+          -O gaming4free.py
         ls -l gaming4free.py
 
     - name: Run Script
@@ -58,7 +143,6 @@ jobs:
       run: |
         xvfb-run -a python gaming4free.py
 
-    # ==================== 清理所有工作流的旧运行记录（改进版） ====================
     - name: Cleanup all workflow runs (keep latest 3 per workflow)
       if: always()
       env:
@@ -66,13 +150,7 @@ jobs:
       run: |
         KEEP=3
         CURRENT_RUN_ID="${{ github.run_id }}"
-
-        echo "📋 开始清理所有工作流的运行记录，每个工作流保留最近 $KEEP 条。"
-
-        # 获取所有运行记录（包含工作流名称和 ID），最多 500 条
         runs_json=$(gh run list --limit 500 --json databaseId,workflowName)
-
-        # 按工作流名称分组，对每个组保留前 KEEP 个，其余放入删除列表
         echo "$runs_json" | jq -c --argjson keep "$KEEP" '
           group_by(.workflowName) | .[] | {
             workflow: .[0].workflowName,
@@ -82,18 +160,12 @@ jobs:
           wf_name=$(echo "$obj" | jq -r '.workflow')
           to_delete=$(echo "$obj" | jq -r '.to_delete[]')
           if [ -z "$to_delete" ]; then
-            echo "✅ 工作流 '$wf_name' 无需清理。"
             continue
           fi
-          echo "▶️ 工作流: $wf_name，将删除以下旧记录："
           for run_id in $to_delete; do
             if [ "$run_id" == "$CURRENT_RUN_ID" ]; then
-              echo "   ⏭️ 跳过当前运行 ID: $run_id"
               continue
             fi
-            echo "   🗑️ 删除运行 ID: $run_id"
             gh run delete $run_id
           done
         done
-
-        echo "✅ 清理完成！"
