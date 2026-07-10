@@ -73,4 +73,113 @@ jobs:
             "server": host,
             "server_port": port,
             "uuid": uuid,
-            "security
+            "security": security if security else "none",
+            "cipher": "auto",
+            "tls": {
+                "enabled": bool(security),
+                "server_name": sni,
+                "insecure": False,
+                "utls": {
+                    "enabled": True,
+                    "fingerprint": fp
+                }
+            }
+        }
+        if protocol == 'vless' and flow:
+            outbound['flow'] = flow
+
+        if transport_type == 'ws':
+            outbound['transport'] = {
+                "type": "ws",
+                "path": ws_path or "/",
+                "headers": {
+                    "Host": ws_host or host
+                }
+            }
+
+        config = {
+            "log": {"level": "error"},
+            "inbounds": [
+                {
+                    "type": "socks",
+                    "tag": "socks-in",
+                    "listen": "127.0.0.1",
+                    "listen_port": 1080
+                }
+            ],
+            "outbounds": [outbound],
+            "route": {
+                "rules": [
+                    {
+                        "outbound": "proxy",
+                        "network": ["tcp", "udp"]
+                    }
+                ],
+                "final": "proxy"
+            }
+        }
+        with open('/tmp/config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+        print('Config generated successfully')
+        print('Server:', host)
+        print('Port:', port)
+        PYEOF
+
+    - name: Start sing-box proxy
+      run: |
+        nohup sing-box run -c /tmp/config.json > sing-box.log 2>&1 &
+        sleep 5
+        echo "Testing proxy..."
+        curl -x socks5://127.0.0.1:1080 https://api.ipify.org -s -o /dev/null -w "出口IP: %{remote_ip}\n" || echo "Proxy test failed"
+        echo "sing-box log:"
+        cat sing-box.log || true
+
+    - name: Pull script from private repository
+      env:
+        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+      run: |
+        echo "Downloading script..."
+        wget --header="Authorization: token ${REPO_TOKEN}" \
+          https://raw.githubusercontent.com/gunqio/zhiyong/main/gaming4free.py \
+          -O gaming4free.py 2>&1 || echo "Download failed"
+        ls -l gaming4free.py || echo "File not found"
+
+    - name: Run Script
+      env:
+        PROXY: socks5://127.0.0.1:1080
+        TG_TOKEN: ${{ secrets.TG_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        SERVERS: ${{ secrets.SERVERS }}
+      run: |
+        xvfb-run -a python gaming4free.py
+
+    - name: Cleanup workflow runs
+      if: always()
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        KEEP=3
+        CURRENT_RUN_ID="${{ github.run_id }}"
+        echo "开始清理..."
+        runs_json=$(gh run list --limit 500 --json databaseId,workflowName)
+        echo "$runs_json" | jq -c --argjson keep "$KEEP" '
+          group_by(.workflowName) | .[] | {
+            workflow: .[0].workflowName,
+            to_delete: .[$keep:] | map(.databaseId)
+          }
+        ' | while read -r obj; do
+          wf_name=$(echo "$obj" | jq -r '.workflow')
+          to_delete=$(echo "$obj" | jq -r '.to_delete[]')
+          if [ -z "$to_delete" ]; then
+            echo "工作流 '$wf_name' 无需清理。"
+            continue
+          fi
+          for run_id in $to_delete; do
+            if [ "$run_id" == "$CURRENT_RUN_ID" ]; then
+              continue
+            fi
+            echo "删除运行 ID: $run_id"
+            gh run delete $run_id
+          done
+        done
+        echo "清理完成！"
