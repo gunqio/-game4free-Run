@@ -1,7 +1,9 @@
 name: Gaming4free Auto Renew
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:                     # 手动触发
+  repository_dispatch:                   # 外部 API 触发（软路由调度）
+    types: [axen_auto_task]              # 事件类型，必须与脚本中的 EVENT_TYPE 一致
 
 permissions:
   contents: write
@@ -50,7 +52,6 @@ jobs:
             sys.exit(1)
 
         parsed = urlparse(proxy_url)
-        protocol = parsed.scheme
         host = parsed.hostname
         port = parsed.port or 443
         uuid = parsed.username
@@ -67,7 +68,6 @@ jobs:
         ws_host = query.get('host', [''])[0]
         ws_path = query.get('path', [''])[0]
 
-        # sing-box 1.8.6 VLESS 配置格式
         outbound = {
             "type": "vless",
             "tag": "proxy",
@@ -86,7 +86,6 @@ jobs:
             }
         }
 
-        # 添加 transport（WebSocket）
         if transport_type == 'ws':
             outbound["transport"] = {
                 "type": "ws",
