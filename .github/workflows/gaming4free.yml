@@ -3,7 +3,7 @@ name: Gaming4free Auto Renew
 on:
   workflow_dispatch:                     # 手动触发
   repository_dispatch:                   # 外部 API 触发（软路由调度）
-    types: [axen_auto_task]              # 事件类型，必须与脚本中的 EVENT_TYPE 一致
+    types: [game4free_task]              # 事件类型，必须与脚本中的 EVENT_TYPE 一致
 
 permissions:
   contents: write
