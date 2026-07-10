@@ -67,16 +67,16 @@ jobs:
         ws_host = query.get('host', [''])[0]
         ws_path = query.get('path', [''])[0]
 
+        # sing-box 1.8.6 VLESS 配置格式
         outbound = {
-            "type": protocol,
+            "type": "vless",
             "tag": "proxy",
             "server": host,
             "server_port": port,
             "uuid": uuid,
-            "security": security if security else "none",
-            "cipher": "auto",
+            "flow": flow if flow else "",
             "tls": {
-                "enabled": bool(security),
+                "enabled": True if security else False,
                 "server_name": sni,
                 "insecure": False,
                 "utls": {
@@ -85,11 +85,10 @@ jobs:
                 }
             }
         }
-        if protocol == 'vless' and flow:
-            outbound['flow'] = flow
 
+        # 添加 transport（WebSocket）
         if transport_type == 'ws':
-            outbound['transport'] = {
+            outbound["transport"] = {
                 "type": "ws",
                 "path": ws_path or "/",
                 "headers": {
@@ -123,6 +122,8 @@ jobs:
         print('Config generated successfully')
         print('Server:', host)
         print('Port:', port)
+        print('Security:', security)
+        print('Transport:', transport_type)
         PYEOF
 
     - name: Start sing-box proxy
