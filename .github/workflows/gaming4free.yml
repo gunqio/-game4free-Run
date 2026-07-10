@@ -29,19 +29,15 @@ jobs:
       run: |
         seleniumbase install chromedriver
 
-    # ==================== 使用 sing-box 搭建 SOCKS5 代理 ====================
     - name: Setup Proxy (sing-box)
       env:
-        # PROXY_URL 请填入你的 VLESS 链接（建议移除 &ech=... 参数）
         PROXY_URL: ${{ secrets.PROXY }}
       run: |
-        # 1. 下载 sing-box
         wget -q https://github.com/SagerNet/sing-box/releases/download/v1.8.6/sing-box-1.8.6-linux-amd64.tar.gz
         tar -xzf sing-box-1.8.6-linux-amd64.tar.gz
         sudo mv sing-box-1.8.6-linux-amd64/sing-box /usr/local/bin/
         chmod +x /usr/local/bin/sing-box
 
-        # 2. 生成 sing-box 配置文件 (支持 VLESS + WebSocket)
         cat > /tmp/gen_config.py <<'EOF'
 import os, json, sys
 from urllib.parse import urlparse, parse_qs
@@ -65,12 +61,9 @@ security = query.get('security', [''])[0]
 sni = query.get('sni', [''])[0] or host
 fp = query.get('fp', ['chrome'])[0]
 flow = query.get('flow', [''])[0]
-# 传输参数
-transport_type = query.get('type', [''])[0]   # ws, tcp, etc.
+transport_type = query.get('type', [''])[0]
 ws_host = query.get('host', [''])[0]
 ws_path = query.get('path', [''])[0]
-
-# 忽略 ech 参数（sing-box 不支持，若服务器强制要求将无法使用）
 
 outbound = {
     "type": protocol,
@@ -93,7 +86,6 @@ outbound = {
 if protocol == 'vless' and flow:
     outbound['flow'] = flow
 
-# 配置 WebSocket 传输
 if transport_type == 'ws':
     outbound['transport'] = {
         "type": "ws",
@@ -129,23 +121,17 @@ with open('/tmp/config.json', 'w') as f:
 EOF
 
         python3 /tmp/gen_config.py
-
-        # 3. 后台启动 sing-box
         nohup sing-box run -c /tmp/config.json > sing-box.log 2>&1 &
         sleep 5
-
-        # 4. 验证代理是否生效
-        echo "🔍 测试代理连通性："
-        curl -x socks5://127.0.0.1:1080 https://api.ipify.org -s -o /dev/null -w "出口IP: %{remote_ip}\n" || echo "⚠️ 代理测试失败，请检查 PROXY_URL 配置"
-    # =====================================================================
+        curl -x socks5://127.0.0.1:1080 https://api.ipify.org -s -o /dev/null -w "出口IP: %{remote_ip}\n" || echo "代理测试失败"
 
     - name: Pull script from private repository
       env:
         REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
       run: |
         wget -q --header="Authorization: token ${REPO_TOKEN}" \
-             https://raw.githubusercontent.com/gunqio/zhiyong/main/gaming4free.py \
-             -O gaming4free.py
+          https://raw.githubusercontent.com/gunqio/zhiyong/main/gaming4free.py \
+          -O gaming4free.py
         ls -l gaming4free.py
 
     - name: Run Script
@@ -157,7 +143,6 @@ EOF
       run: |
         xvfb-run -a python gaming4free.py
 
-    # ==================== 清理旧运行记录（保持不变） ====================
     - name: Cleanup all workflow runs (keep latest 3 per workflow)
       if: always()
       env:
@@ -165,7 +150,6 @@ EOF
       run: |
         KEEP=3
         CURRENT_RUN_ID="${{ github.run_id }}"
-        echo "📋 开始清理所有工作流的运行记录，每个工作流保留最近 $KEEP 条。"
         runs_json=$(gh run list --limit 500 --json databaseId,workflowName)
         echo "$runs_json" | jq -c --argjson keep "$KEEP" '
           group_by(.workflowName) | .[] | {
@@ -176,17 +160,12 @@ EOF
           wf_name=$(echo "$obj" | jq -r '.workflow')
           to_delete=$(echo "$obj" | jq -r '.to_delete[]')
           if [ -z "$to_delete" ]; then
-            echo "✅ 工作流 '$wf_name' 无需清理。"
             continue
           fi
-          echo "▶️ 工作流: $wf_name，将删除以下旧记录："
           for run_id in $to_delete; do
             if [ "$run_id" == "$CURRENT_RUN_ID" ]; then
-              echo "   ⏭️ 跳过当前运行 ID: $run_id"
               continue
             fi
-            echo "   🗑️ 删除运行 ID: $run_id"
             gh run delete $run_id
           done
         done
-        echo "✅ 清理完成！"
