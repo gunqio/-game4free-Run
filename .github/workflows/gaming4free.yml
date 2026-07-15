@@ -1,13 +1,12 @@
 name: Gaming4free Auto Renew
 
 on:
-  workflow_dispatch:                     # 手动触发
-  repository_dispatch:                   # 外部 API 触发（软路由调度）
-    types: [game4free_task]              # 事件类型，必须与脚本中的 EVENT_TYPE 一致
+  schedule:
+    - cron: '0 */2 * * *'  # 每 2 小时自动运行一次
+  workflow_dispatch:       # 保持手动触发，方便随时测试
 
 permissions:
   contents: write
-  actions: write
 
 jobs:
   run_renewal:
@@ -26,160 +25,43 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install seleniumbase requests
-
+        
     - name: Setup Chrome
       run: |
         seleniumbase install chromedriver
 
-    - name: Download sing-box
-      run: |
-        wget -q https://github.com/SagerNet/sing-box/releases/download/v1.8.6/sing-box-1.8.6-linux-amd64.tar.gz
-        tar -xzf sing-box-1.8.6-linux-amd64.tar.gz
-        sudo mv sing-box-1.8.6-linux-amd64/sing-box /usr/local/bin/
-        chmod +x /usr/local/bin/sing-box
-
-    - name: Generate sing-box config
+    - name: Setup Proxy Tunnel (Xray-core)
       env:
-        PROXY_URL: ${{ secrets.PROXY }}
+        XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }} 
       run: |
-        python3 << 'PYEOF'
-        import os, json, sys
-        from urllib.parse import urlparse, parse_qs
-
-        proxy_url = os.environ.get('PROXY_URL', '')
-        if not proxy_url:
-            print('PROXY_URL not set', file=sys.stderr)
-            sys.exit(1)
-
-        parsed = urlparse(proxy_url)
-        host = parsed.hostname
-        port = parsed.port or 443
-        uuid = parsed.username
-        if not uuid:
-            print('Missing UUID in PROXY_URL', file=sys.stderr)
-            sys.exit(1)
-
-        query = parse_qs(parsed.query)
-        security = query.get('security', [''])[0]
-        sni = query.get('sni', [''])[0] or host
-        fp = query.get('fp', ['chrome'])[0]
-        flow = query.get('flow', [''])[0]
-        transport_type = query.get('type', [''])[0]
-        ws_host = query.get('host', [''])[0]
-        ws_path = query.get('path', [''])[0]
-
-        outbound = {
-            "type": "vless",
-            "tag": "proxy",
-            "server": host,
-            "server_port": port,
-            "uuid": uuid,
-            "flow": flow if flow else "",
-            "tls": {
-                "enabled": True if security else False,
-                "server_name": sni,
-                "insecure": False,
-                "utls": {
-                    "enabled": True,
-                    "fingerprint": fp
-                }
-            }
-        }
-
-        if transport_type == 'ws':
-            outbound["transport"] = {
-                "type": "ws",
-                "path": ws_path or "/",
-                "headers": {
-                    "Host": ws_host or host
-                }
-            }
-
-        config = {
-            "log": {"level": "error"},
-            "inbounds": [
-                {
-                    "type": "socks",
-                    "tag": "socks-in",
-                    "listen": "127.0.0.1",
-                    "listen_port": 1080
-                }
-            ],
-            "outbounds": [outbound],
-            "route": {
-                "rules": [
-                    {
-                        "outbound": "proxy",
-                        "network": ["tcp", "udp"]
-                    }
-                ],
-                "final": "proxy"
-            }
-        }
-        with open('/tmp/config.json', 'w') as f:
-            json.dump(config, f, indent=2)
-        print('Config generated successfully')
-        print('Server:', host)
-        print('Port:', port)
-        print('Security:', security)
-        print('Transport:', transport_type)
-        PYEOF
-
-    - name: Start sing-box proxy
-      run: |
-        nohup sing-box run -c /tmp/config.json > sing-box.log 2>&1 &
+        # 下载并解压 Xray-core
+        wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+        unzip -q Xray-linux-64.zip -d xray
+        chmod +x xray/xray
+        
+        # 使用 printenv 完美写入配置，避免任何字符转义和空格导致的崩溃
+        printenv XRAY_CONFIG > xray/config.json
+        
+        # 后台启动 Xray
+        nohup ./xray/xray run -c xray/config.json > xray.log 2>&1 &
         sleep 5
-        echo "Testing proxy..."
-        curl -x socks5://127.0.0.1:1080 https://api.ipify.org -s -o /dev/null -w "出口IP: %{remote_ip}\n" || echo "Proxy test failed"
-        echo "sing-box log:"
-        cat sing-box.log || true
-
-    - name: Pull script from private repository
-      env:
-        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
-      run: |
-        echo "Downloading script..."
-        wget --header="Authorization: token ${REPO_TOKEN}" \
-          https://raw.githubusercontent.com/gunqio/zhiyong/main/gaming4free.py \
-          -O gaming4free.py 2>&1 || echo "Download failed"
-        ls -l gaming4free.py || echo "File not found"
+        
+        # 检查 Xray 进程是否存活
+        if ! pgrep -x "xray" > /dev/null; then
+            echo "❌ Xray 进程未启动或已崩溃！查看报错日志："
+            cat xray.log
+            exit 1
+        fi
+        
+        # 测试节点连通性
+        curl -il -x socks5://127.0.0.1:10808 https://api.ipify.org || (echo "❌ 代理测试失败，查看 Xray 日志:" && cat xray.log && exit 1)
 
     - name: Run Script
       env:
-        PROXY: socks5://127.0.0.1:1080
-        TG_TOKEN: ${{ secrets.TG_TOKEN }}
-        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        SERVERS: ${{ secrets.SERVERS }}
+        PROXY: socks5://127.0.0.1:10808
+        TG_TOKEN: ${{ secrets.TG_TOKEN }}      
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}  
+        SERVERS: ${{ secrets.SERVERS }}  
       run: |
+        # 使用 xvfb 运行以支持强力过人机验证模式
         xvfb-run -a python gaming4free.py
-
-    - name: Cleanup workflow runs
-      if: always()
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        KEEP=3
-        CURRENT_RUN_ID="${{ github.run_id }}"
-        echo "开始清理..."
-        runs_json=$(gh run list --limit 500 --json databaseId,workflowName)
-        echo "$runs_json" | jq -c --argjson keep "$KEEP" '
-          group_by(.workflowName) | .[] | {
-            workflow: .[0].workflowName,
-            to_delete: .[$keep:] | map(.databaseId)
-          }
-        ' | while read -r obj; do
-          wf_name=$(echo "$obj" | jq -r '.workflow')
-          to_delete=$(echo "$obj" | jq -r '.to_delete[]')
-          if [ -z "$to_delete" ]; then
-            echo "工作流 '$wf_name' 无需清理。"
-            continue
-          fi
-          for run_id in $to_delete; do
-            if [ "$run_id" == "$CURRENT_RUN_ID" ]; then
-              continue
-            fi
-            echo "删除运行 ID: $run_id"
-            gh run delete $run_id
-          done
-        done
-        echo "清理完成！"
